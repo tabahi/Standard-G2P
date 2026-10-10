@@ -33,7 +33,7 @@ assert all(0 <= i < d['n_gold_ph'] for i in d['gold_ph'])
 assert all(0 <= g < d['n_gold_phg'] for g in d['gold_phg'])
 
 # 2. Gold indices -> the local tokens of the language's language group.
-t = LGI.to_local(d['gold_ph'], 'pt-BR')
+t = LGI.to_local(d['gold_ph'], 'pt-BR', d['gold_ph_count'])
 print()
 for k, v in t.items():
     print('%-16s %s' % (k, v))
@@ -48,7 +48,10 @@ for lang, text in [('en-US', 'hello world'),
                    ('th', 'ภาษา'),        # tonal; sentences are word-segmented, see 06
                    ('zh', '狂妄')]:        # tonal; sentences are word-segmented, see 06
     d = G.phonemize_sentence(text, lang=lang)
-    t = LGI.to_local(d['gold_ph'], lang)
+    t = LGI.to_local(d['gold_ph'], lang, d['gold_ph_count'])
+    # tone/stress are one per phoneme; expand() lines them up with local_ph,
+    # which is longer wherever a phoneme backed off to two tokens.
+    assert len(LGI.expand(d['tone'], t['local_ph_count'])) == len(t['local_ph'])
     print('%-6s %-14s lang_group=%-16s local %d-way, gold %d-way'
           % (lang, text, t['lang_group'], t['n_local_ph'], t['n_gold_ph']))
     print('       phonemes %s' % d['phonemes'])

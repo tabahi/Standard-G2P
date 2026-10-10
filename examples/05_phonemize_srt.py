@@ -47,4 +47,6 @@ print(json.dumps(gs, ensure_ascii=False, indent=1))
 seg = gs['segments'][0]
 assert all(0 <= i < gs['n_gold_ph'] for i in seg['gold_ph'])
 assert len(seg['phonemes']) == len(seg['tone']) == len(seg['stress']) \
-    == len(seg['length']) == len(seg['word_num'])
+    == len(seg['length']) == len(seg['word_num']) == len(seg['gold_ph_count'])
+# gold_ph_count says how many gold tokens each phoneme became.
+assert sum(seg['gold_ph_count']) == len(seg['gold_ph'])

@@ -32,6 +32,13 @@ except ImportError:                   # imported with standard_g2p/ itself on sy
     import phoneme_inventory_gold
     import word_segmentation as _ws
 
+# Same dual-style import as at the top of the module: this is
+# deferred to here only because panphon-derived tables are large,
+# not because the import context differs.
+try:
+    from . import phoneme_features
+except ImportError:
+    import phoneme_features
 
 # The original model is 'charsiu/g2p_multilingual_byT5_small_100' on the HF hub;
 # the bucket mirror is used for faster download. Weights are cached under the
@@ -610,13 +617,7 @@ class goldG2P:
         self.map_inventory = map_inventory
         self._inv = self._feat = None
         if map_inventory:
-            # Same dual-style import as at the top of the module: this is
-            # deferred to here only because panphon-derived tables are large,
-            # not because the import context differs.
-            try:
-                from . import phoneme_features
-            except ImportError:
-                import phoneme_features
+            
             self._inv, self._feat = phoneme_inventory_gold, phoneme_features
 
         # OrderedDict so eviction is O(1) from the cold end.
@@ -759,19 +760,25 @@ class goldG2P:
 
     def _gold_map(self, phonemes):
         """Map standardized IPA segments onto the gold inventory (see
-        phoneme_inventory_gold). Returns (gold_ph, gold_phg, gold_unmapped):
+        phoneme_inventory_gold). Returns (gold_ph, gold_phg, gold_ph_count,
+        gold_unmapped):
 
             gold_ph        inventory index per mapped unit (a segment that
                             backs off to several units contributes several)
             gold_phg       phoneme group index (phoneme_features.GROUPS),
                            aligned with gold_ph
+            gold_ph_count  per segment of `phonemes`, how many gold_ph
+                           entries it became; aligned with `phonemes`, sums
+                           to len(gold_ph)
             gold_unmapped  sorted list of distinct segments that had no
                            mapping (direct or backoff) -- i.e. still <unk>
 
-        Not index-aligned with `phonemes`: a segment can expand to zero, one
-        or several gold units, so this is an auxiliary view, not a layer.
+        gold_ph is not index-aligned with `phonemes`: a segment can expand to
+        several gold units (37 BACKOFF rules split one, e.g. ʈ͡ʂ -> ʈ ʂ).
+        gold_ph_count is what re-aligns them, and so the tone / stress /
+        length layers with gold_ph and local_ph (lang_group_inventory.expand).
         """
-        gold_ph, gold_phg, unmapped = [], [], set()
+        gold_ph, gold_phg, count, unmapped = [], [], [], set()
         for seg in phonemes:
             mapped = self._inv.map_phoneme(seg)
             if mapped == [self._inv.UNK]:
@@ -780,7 +787,8 @@ class goldG2P:
             for m in mapped:
                 gold_ph.append(self._inv.TOKEN_INDEX[m])
                 gold_phg.append(self._feat.GROUPS.get(m, 0))
-        return gold_ph, gold_phg, sorted(unmapped)
+            count.append(len(mapped))
+        return gold_ph, gold_phg, count, sorted(unmapped)
 
     def _phonemize_words_tag(self, words, tag):
         """Core of `phonemize_words`, given an already-resolved tag. Shared
@@ -807,8 +815,8 @@ class goldG2P:
                'tone': tone, 'stress': stress, 'length': length,
                'word_num': word_num}
         if self.map_inventory:
-            out['gold_ph'], out['gold_phg'], out['gold_unmapped'] = (
-                self._gold_map(phonemes))
+            (out['gold_ph'], out['gold_phg'], out['gold_ph_count'],
+             out['gold_unmapped']) = self._gold_map(phonemes)
         return out
 
     def phonemize_words(self, words, lang=None):
@@ -835,7 +843,11 @@ class goldG2P:
             words     the words actually phonemized
             ipa       raw IPA string per word, kept for audit
         Only when `map_inventory` is set (see `_gold_map`):
-            gold_ph, gold_phg, gold_unmapped
+            gold_ph, gold_phg  one entry per gold token; NOT the length of
+                      `phonemes` when a phoneme backs off to several tokens
+            gold_ph_count      per phoneme, how many gold tokens it became
+                      (aligned with `phonemes`; sums to len(gold_ph))
+            gold_unmapped
         """
         tag = self._tag(lang)
         return {'lang': lang or self.default_lang, 'g2p_lang': tag,
@@ -861,7 +873,8 @@ class goldG2P:
     # both sites that build these arrays (phonemize_words, and the trim/SIL
     # insertion below). `gold_ph`/`gold_phg` are NOT in this set: mapping a
     # segment can expand it to several gold units, so they are not
-    # index-aligned with `phonemes`.
+    # index-aligned with `phonemes`. `gold_ph_count` is per phoneme but exists
+    # only with map_inventory, so it is checked separately.
     PER_PHONEME_KEYS = ('phonemes', 'tone', 'stress', 'length', 'word_num')
     PER_WORD_KEYS = ('words', 'ipa')
 
@@ -889,14 +902,14 @@ class goldG2P:
         `phonemes`. When `map_inventory` is set, each segment is additionally
         mapped onto the gold inventory (see `_gold_map`); `gold_ph`/`gold_phg`
         are NOT index-aligned with `phonemes`, since a segment can expand to
-        several gold units.
+        several gold units; `gold_ph_count` (per phoneme) says how many.
 
             {"audio_path", "lang", "g2p_lang",
              "tonal", "tone_layer", "needs_word_segmentation", "word_segmenter",
              "n_tones", "n_stresses", "n_lengths", "n_gold_ph", "n_gold_phg",
              "segments": [{"start","end","text","words",
                            "phonemes","tone","stress","length","word_num",
-                           "gold_ph","gold_phg","gold_unmapped"}]}
+                           "gold_ph","gold_phg","gold_ph_count","gold_unmapped"}]}
 
         `lang` in the output is the BCP 47 code (the only thing the rest of
         the pipeline should ever read back); `g2p_lang` is CharsiuG2P's own
@@ -966,6 +979,7 @@ class goldG2P:
                     if self.map_inventory:
                         d['gold_ph'].insert(0, sil_ph)
                         d['gold_phg'].insert(0, sil_phg)
+                        d['gold_ph_count'].insert(0, 1)
                 if len(trim) > 1 and trim[1] > self.TRIM_END_THRESHOLD:
                     d['phonemes'].append(sil)
                     d['tone'].append(0)
@@ -975,6 +989,7 @@ class goldG2P:
                     if self.map_inventory:
                         d['gold_ph'].append(sil_ph)
                         d['gold_phg'].append(sil_phg)
+                        d['gold_ph_count'].append(1)
 
             # Misalignment here is silent corruption that only shows up as bad
             # training targets much later, so refuse to write it out.
@@ -988,6 +1003,11 @@ class goldG2P:
                 raise ValueError('per-word misalignment in %s' % srt_path)
             if d['word_num'] and max(d['word_num']) >= len(d['words']):
                 raise ValueError('word_num out of range in %s' % srt_path)
+            if self.map_inventory and (
+                    len(d['gold_ph_count']) != n
+                    or sum(d['gold_ph_count']) != len(d['gold_ph'])
+                    or len(d['gold_phg']) != len(d['gold_ph'])):
+                raise ValueError('gold misalignment in %s' % srt_path)
 
             seg_out = {
                 'start': seg.get('start'),
@@ -1003,6 +1023,7 @@ class goldG2P:
             if self.map_inventory:
                 seg_out['gold_ph'] = d['gold_ph']
                 seg_out['gold_phg'] = d['gold_phg']
+                seg_out['gold_ph_count'] = d['gold_ph_count']
                 seg_out['gold_unmapped'] = d['gold_unmapped']
             out['segments'].append(seg_out)
 

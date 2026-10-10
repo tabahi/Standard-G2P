@@ -52,6 +52,8 @@ a language group, `thai_khmer` and `burmese`, but their labels are not usable: a
 The same table in code:
 
 ```python
+# Dependencies:
+# pip install pythainlp fugashi unidic-lite pycantonese pyidaungsu khmer-nltk
 from standard_g2p import lang_group_inventory as LGI
 LGI.list_all_lang_groups        # ['latin', 'vietnamese', 'cyrillic', ...]
 LGI.member_langs['latin']       # ['af', 'ang', ..., 'uz'], excluded languages included
@@ -77,7 +79,7 @@ from standard_g2p import lang_group_inventory as LGI
 
 G = goldG2P(device='cuda:0')        # weights are fetched once into tmp/
 d = G.phonemize_sentence('uma parceria', lang='pt-BR')        # stages 1 and 2
-t = LGI.to_local(d['gold_ph'], 'pt-BR')                       # stage 3
+t = LGI.to_local(d['gold_ph'], 'pt-BR', d['gold_ph_count'])   # stage 3
 ```
 
 Stages 1 and 2, from `phonemize_sentence`:
@@ -98,6 +100,7 @@ Stages 1 and 2, from `phonemize_sentence`:
  # stage 2: gold
  'gold_ph':  [204, 38, 23, 4, 37, 5, 7, 18, 6, 38],                  # < n_gold_ph
  'gold_phg': [1, 2, 4, 3, 8, 7, 2, 11, 1, 2],                        # < n_gold_phg (phoneme group, optional coarse target)
+ 'gold_ph_count': [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],                    # per phoneme: how many gold_ph it became
  'gold_unmapped': []}
 ```
 
@@ -106,6 +109,7 @@ Stage 3, from `to_local`. These are the final output, the local tokens of the `l
 ```python
 {'lang': 'pt-BR', 'lang_group': 'latin',
  'local_ph': [173, 38, 23, 4, 37, 5, 7, 18, 6, 38],   # < n_local_ph
+ 'local_ph_count': [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],    # per phoneme: how many local_ph it became
  'n_local_ph': 208, 'n_gold_ph': 270,
  'unk': 3, 'n_folded': 0, 'gold_fingerprint': '9438371ed6dd'}
 ```
@@ -114,8 +118,19 @@ The same `ũ` is 204 in gold and 173 in `latin`. `LGI.decode(t['local_ph'], 'pt-
 into `['ũ', 'ɐ', 'p', …]`. A gold token that is not on the language group's list becomes its `<unk>`, and `n_folded`
 counts how many did.
 
-`local_ph` is not always the same length as `phonemes`. A phoneme that backs off can expand to several gold tokens
-(`ʈ͡ʂ` → `ʈ ʂ`), and the tone, stress and length layers stay aligned with `phonemes` (see §4 below).
+**Lining up tone and stress with `local_ph`.** `local_ph` is not always the same length as `phonemes`: a phoneme
+that backs off can become two tokens (`ʈ͡ʂ` → `ʈ ʂ`, `ə͡ʊ` → `ə ʊ`), while `tone`, `stress`, `length` and
+`word_num` stay one per phoneme. In the FLEURS dev output this happens in 5.1% of segments (930 of 18,412), almost all
+of them Luxembourgish, Belarusian, Maltese, Amharic and Estonian. `gold_ph_count`, and `local_ph_count` from
+`to_local`, say how many tokens each phoneme became, and `LGI.expand` repeats a layer to match:
+
+```python
+t = LGI.to_local(seg['gold_ph'], lang, seg['gold_ph_count'])
+tone = LGI.expand(seg['tone'], t['local_ph_count'])      # len(tone) == len(t['local_ph'])
+```
+
+Both tokens of a split phoneme get its tone, stress, length and word. For a `.gs.json` written before
+`gold_ph_count` existed, `LGI.gold_ph_count_of(seg['phonemes'])` recomputes it.
 
 ### Examples
 
@@ -205,7 +220,8 @@ to `noise`. With backoff, coverage is 100%. Anything that still has no mapping b
 `gold_unmapped`.
 
 `gold_ph` is **not** index-aligned with `phonemes`, because a backed-off segment can expand into several units
-(`ʈ͡ʂ → ʈ ʂ`).
+(`ʈ͡ʂ → ʈ ʂ`; 37 of the `BACKOFF` rules split a segment in two). `gold_ph_count` records how many units each
+segment became (see *Lining up tone and stress* above).
 
 **Phoneme groups and features.** `gold_phg` gives each gold token one of 15 phoneme groups (vowel_close, stop_voiced,
 nasal, …), an optional coarse target next to the fine one.

@@ -16,8 +16,9 @@ without rewriting any .gs.json.
     LGI.list_all_lang_groups                      # ['latin', 'vietnamese', ..., 'burmese']
     LGI.member_langs['latin']                     # ['af', 'ang', ..., 'uz']
     LGI.lang_group_of('pt-BR')                    # 'latin'
-    t = LGI.to_local(seg['gold_ph'], 'pt-BR')     # dict: indices + their scope
+    t = LGI.to_local(seg['gold_ph'], 'pt-BR', seg['gold_ph_count'])
     t['local_ph']                                 # indices into the language group's token list
+    LGI.expand(seg['tone'], t['local_ph_count'])  # tone per local token, same length
     t['n_local_ph']                               # its token count (208)
     LGI.decode(t['local_ph'], 'pt-BR')            # ['p', 'a', 'ʁ', ...]
 
@@ -153,14 +154,24 @@ def tokens(lang_group):
     return inventory(lang_group)['tokens']
 
 
-def to_local(gold_ph, lang):
+def to_local(gold_ph, lang, gold_ph_count=None):
     """Gold indices (a .gs.json `gold_ph`) -> the language group's local
     indices, with the scope needed to interpret them.
+
+    `gold_ph_count` is the segment's per-phoneme count of gold tokens (a
+    .gs.json `gold_ph_count`). Pass it to get `local_ph_count` back, which is
+    what lines the per-phoneme layers (tone, stress, length, word_num) up with
+    `local_ph`: see `expand`. For files written before `gold_ph_count`
+    existed, `gold_ph_count_of(seg['phonemes'])` recomputes it.
 
     Returns a dict:
         lang        canonical BCP 47 code the table is keyed by
         lang_group  the language group whose token list `local_ph` indexes
         local_ph    local index per gold index, same length as `gold_ph`
+        local_ph_count  (only when `gold_ph_count` is given) per phoneme, how
+                    many `local_ph` entries it became. One local token per
+                    gold token, so this equals `gold_ph_count`; it is checked
+                    to sum to len(local_ph)
         n_local_ph  the language group's token count, specials included
         n_gold_ph   size of the gold space `gold_ph` indexed
         unk         the language group's <unk> index
@@ -180,7 +191,7 @@ def to_local(gold_ph, lang):
     unk = rec['tokens'].index(PI.UNK)
     gold_unk = PI.TOKEN_INDEX[PI.UNK]
     local = [table[i] for i in gold_ph]
-    return {
+    out = {
         'lang': code,
         'lang_group': lang_group,
         'local_ph': local,
@@ -190,6 +201,34 @@ def to_local(gold_ph, lang):
         'n_folded': sum(1 for g, l in zip(gold_ph, local) if l == unk and g != gold_unk),
         'gold_fingerprint': load()['gold']['fingerprint'],
     }
+    if gold_ph_count is not None:
+        if sum(gold_ph_count) != len(local):
+            raise ValueError(f'gold_ph_count sums to {sum(gold_ph_count)} but '
+                             f'gold_ph has {len(local)} entries')
+        out['local_ph_count'] = list(gold_ph_count)
+    return out
+
+
+def expand(per_phoneme, local_ph_count):
+    """Repeat a per-phoneme layer so it lines up with `local_ph`.
+
+        t = to_local(seg['gold_ph'], lang, seg['gold_ph_count'])
+        tone = expand(seg['tone'], t['local_ph_count'])     # len == len(t['local_ph'])
+
+    A phoneme that became two tokens (ʈ͡ʂ -> ʈ ʂ) gives both of them its tone,
+    stress, length and word_num; one that became none drops out.
+    """
+    if len(per_phoneme) != len(local_ph_count):
+        raise ValueError(f'{len(per_phoneme)} values for {len(local_ph_count)} '
+                         f'phonemes')
+    return [v for v, n in zip(per_phoneme, local_ph_count) for _ in range(n)]
+
+
+def gold_ph_count_of(phonemes):
+    """`gold_ph_count` recomputed from a segment's `phonemes`, for .gs.json
+    files written before it was stored. Valid while the gold inventory is the
+    one the file was written with (`load()` checks the fingerprint)."""
+    return [len(PI.map_phoneme(p)) for p in phonemes]
 
 
 def decode(local, lang):
